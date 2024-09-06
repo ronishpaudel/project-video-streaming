@@ -17,16 +17,16 @@ app.use(
 
 app.options("*", cors());
 
-// serve static files with proper MIME types
+// Serve static files with proper MIME types
 app.use(
   "/uploads",
   express.static("uploads", {
-    setHeaders: (res, path) => {
-      if (path.endsWith(".m3u8")) {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith(".m3u8")) {
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      } else if (path.endsWith(".ts")) {
+      } else if (filePath.endsWith(".ts")) {
         res.setHeader("Content-Type", "video/mp2t");
-      } else if (path.endsWith(".mov")) {
+      } else if (filePath.endsWith(".mov")) {
         res.setHeader("Content-Type", "video/quicktime");
       }
     },
@@ -38,7 +38,11 @@ app.use(express.urlencoded({ extended: true }));
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, "./uploads");
+    const uploadDir = path.resolve(__dirname, "uploads");
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
     cb(null, file.fieldname + "-" + uuidv4() + path.extname(file.originalname));
@@ -52,7 +56,7 @@ const upload = multer({
 
 // GET handler
 app.get("/uploads", function (req, res) {
-  const courseDirectoryPath = path.join(__dirname, "uploads/course");
+  const courseDirectoryPath = path.resolve(__dirname, "uploads/course");
 
   fs.readdir(courseDirectoryPath, (err, files) => {
     if (err) {
@@ -70,42 +74,43 @@ app.get("/uploads", function (req, res) {
       return res.status(404).json({ message: "No lessons found" });
     }
 
-    const urls = lessonIds.map((lessonId) => {
-      return `/uploads/course/${lessonId}/index.m3u8`;
-    });
+    const urls = lessonIds.map(
+      (lessonId) => `/uploads/course/${lessonId}/index.m3u8`
+    );
 
     res.status(200).json({ urls });
   });
 });
 
-// upload route handler
+// POST handler
 app.post("/upload", upload.single("file"), function (req, res) {
   if (!req.file) {
     return res.status(400).json({ message: "No file uploaded" });
   }
-  // convert video in HLS format
-  const lessonId = uuidv4();
-  const videoPath = req.file.path;
-  const outputPath = `./uploads/course/${lessonId}`;
-  const hlsPath = `${outputPath}/index.m3u8`;
-  console.log("hlsPath", hlsPath);
 
-  // if the output directory doesn't exist, create it
+  const lessonId = uuidv4();
+  const videoPath = path.resolve(req.file.path);
+  const outputPath = path.resolve(__dirname, "uploads/course", lessonId);
+  const hlsPath = path.join(outputPath, "index.m3u8");
+
+  console.log(`hlsPath : ./upload/course/${lessonId}/index.m3u8`);
+  // Ensure directories  exist
   if (!fs.existsSync(outputPath)) {
     fs.mkdirSync(outputPath, { recursive: true });
   }
 
-  // command to convert video to HLS format using ffmpeg
-  const ffmpegCommand = `ffmpeg -i ${videoPath} -codec:v libx264 -codec:a aac -hls_time 10 -hls_playlist_type vod -hls_segment_filename "${outputPath}/segment%03d.ts" -start_number 0 ${hlsPath}`;
+  // ffmpeg command to convert video to HLS format
+  const ffmpegCommand = `ffmpeg -i "${videoPath}" -codec:v libx264 -codec:a aac -hls_time 10 -hls_playlist_type vod -hls_segment_filename "${outputPath}/segment%03d.ts" -start_number 0 "${hlsPath}"`;
 
-  // run the ffmpeg command; usually done in a separate process
+  // Run the ffmpeg command
   exec(ffmpegCommand, (error, stdout, stderr) => {
     if (error) {
       console.error(`exec error: ${error}`);
-      return;
+      return res.status(500).json({ message: "Error converting video" });
     }
     console.log(`stdout: ${stdout}`);
     console.log(`stderr: ${stderr}`);
+
     const videoUrl = `http://localhost:3000/uploads/course/${lessonId}/index.m3u8`;
     res.json({
       message: "Video converted to HLS format",
@@ -119,8 +124,27 @@ app.get("/", function (req, res) {
   res.json({ message: "Hello World!" });
 });
 
-const PORT = process.env.PORT || 8000;
+let PORT = process.env.PORT || 3000;
 
-app.listen(PORT, function () {
+const server = app.listen(PORT, function () {
   console.log(`Server running on port ${PORT}`);
 });
+
+// Handle port in use error and switch to another port
+server.on("error", (err: CustomError) => {
+  if (err.code === "EADDRINUSE") {
+    console.log(
+      `Port ${PORT} is already in use. Switching to a different port...`
+    );
+    PORT = Number(PORT) + 1;
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } else {
+    console.error(`Server error: ${(err as any).message}`);
+  }
+});
+
+interface CustomError extends Error {
+  code?: string;
+}
