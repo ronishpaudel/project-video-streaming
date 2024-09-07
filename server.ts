@@ -16,7 +16,6 @@ app.use(
 );
 
 app.options("*", cors());
-
 // Serve static files with proper MIME types
 app.use(
   "/uploads",
